@@ -1,0 +1,320 @@
+import os
+import sys
+
+spark_path ='/home/gaurav/Downloads/spark-2.4.3-bin-hadoop2.7'
+os.environ['SPARK_HOME']= spark_path
+os.environ['HADOOP_HOME']=spark_path
+sys.path.append(spark_path+'/bin')
+sys.path.append(spark_path+'/python')
+sys.path.append(spark_path+'/python/pyspark')
+sys.path.append(spark_path+'/python/lib')
+sys.path.append(spark_path+'/python/lib/pyspark.zip')
+sys.path.append(spark_path+'/python/lib/py4j-0.10.7-src.zip')
+
+from pyspark import SparkContext
+from pyspark import SparkConf
+from pyspark.sql import SparkSession
+spark = SparkSession.builder.appName('ml-bank').getOrCreate()
+df = spark.read.csv('/home/gaurav/Documents/Data Science/bank.csv', header = True, inferSchema = True)
+df.printSchema()
+root
+ |-- age: integer (nullable = true)
+ |-- job: string (nullable = true)
+ |-- marital: string (nullable = true)
+ |-- education: string (nullable = true)
+ |-- default: string (nullable = true)
+ |-- balance: integer (nullable = true)
+ |-- housing: string (nullable = true)
+ |-- loan: string (nullable = true)
+ |-- contact: string (nullable = true)
+ |-- day: integer (nullable = true)
+ |-- month: string (nullable = true)
+ |-- duration: integer (nullable = true)
+ |-- campaign: integer (nullable = true)
+ |-- pdays: integer (nullable = true)
+ |-- previous: integer (nullable = true)
+ |-- poutcome: string (nullable = true)
+ |-- deposit: string (nullable = true)
+
+Input variables: age, job, marital, education, default, balance, housing, loan, contact, day, month, duration, campaign, pdays, previous, poutcome.
+Output variable: deposit
+import pandas as pd
+pd.DataFrame(df.take(5), columns=df.columns)
+age	job	marital	education	default	balance	housing	loan	contact	day	month	duration	campaign	pdays	previous	poutcome	deposit
+0	59	admin.	married	secondary	no	2343	yes	no	unknown	5	may	1042	1	-1	0	unknown	yes
+1	56	admin.	married	secondary	no	45	no	no	unknown	5	may	1467	1	-1	0	unknown	yes
+2	41	technician	married	secondary	no	1270	yes	no	unknown	5	may	1389	1	-1	0	unknown	yes
+3	55	services	married	secondary	no	2476	yes	no	unknown	5	may	579	1	-1	0	unknown	yes
+4	54	admin.	married	tertiary	no	184	no	no	unknown	5	may	673	2	-1	0	unknown	yes
+numeric_features = [t[0] for t in df.dtypes if t[1] == 'int']
+df.select(numeric_features).describe().toPandas()
+summary	age	balance	day	duration	campaign	pdays	previous
+0	count	11162	11162	11162	11162	11162	11162	11162
+1	mean	41.231947679627304	1528.5385235620856	15.658036194230425	371.99381831213043	2.508421429851281	51.33040673714388	0.8325568894463358
+2	stddev	11.913369192215518	3225.413325946149	8.420739541006462	347.12838571630687	2.7220771816614824	108.75828197197717	2.292007218670508
+3	min	18	-6847	1	2	1	-1	0
+4	max	95	81204	31	3881	63	854	58
+#Correlations between independent variables.
+import matplotlib.pyplot as plt
+%matplotlib inline
+numeric_data = df.select(numeric_features).toPandas()
+axs = pd.plotting.scatter_matrix(numeric_data, figsize=(8, 8));
+n = len(numeric_data.columns)
+for i in range(n):
+    v = axs[i, 0]
+    v.yaxis.label.set_rotation(0)
+    v.yaxis.label.set_ha('right')
+    v.set_yticks(())
+    h = axs[n-1, i]
+    h.xaxis.label.set_rotation(90)
+    h.set_xticks(())
+
+#It’s obvious that there aren’t highly correlated numeric variables. 
+#Therefore, we will keep all of them for the model.
+df = df.select('age', 'job', 'marital', 'education', 'default', 
+               'balance', 'housing', 'loan', 'contact', 'duration', 'campaign', 'pdays', 
+               'previous', 'poutcome', 'deposit')
+cols = df.columns
+df.printSchema()
+root
+ |-- age: integer (nullable = true)
+ |-- job: string (nullable = true)
+ |-- marital: string (nullable = true)
+ |-- education: string (nullable = true)
+ |-- default: string (nullable = true)
+ |-- balance: integer (nullable = true)
+ |-- housing: string (nullable = true)
+ |-- loan: string (nullable = true)
+ |-- contact: string (nullable = true)
+ |-- duration: integer (nullable = true)
+ |-- campaign: integer (nullable = true)
+ |-- pdays: integer (nullable = true)
+ |-- previous: integer (nullable = true)
+ |-- poutcome: string (nullable = true)
+ |-- deposit: string (nullable = true)
+
+Preparing Data for Machine Learning
+The process includes Category Indexing, One-Hot Encoding and VectorAssembler — a feature transformer that merges multiple columns into a vector column.
+
+from pyspark.ml.feature import OneHotEncoderEstimator, StringIndexer, VectorAssembler
+
+categoricalColumns = ['job', 'marital', 'education', 'default', 'housing', 'loan', 'contact', 'poutcome']
+stages = []
+for categoricalCol in categoricalColumns:
+    stringIndexer = StringIndexer(inputCol = categoricalCol, outputCol = categoricalCol + 'Index')
+    encoder = OneHotEncoderEstimator(inputCols=[stringIndexer.getOutputCol()], 
+                                     outputCols=[categoricalCol + "classVec"])
+    stages += [stringIndexer, encoder]
+label_stringIdx = StringIndexer(inputCol = 'deposit', outputCol = 'label')
+stages += [label_stringIdx]
+numericCols = ['age', 'balance', 'duration', 'campaign', 'pdays', 'previous']
+assemblerInputs = [c + "classVec" for c in categoricalColumns] + numericCols
+assembler = VectorAssembler(inputCols=assemblerInputs, outputCol="features")
+stages += [assembler]
+Pipeline
+We use Pipeline to chain multiple Transformers and Estimators together to specify our machine learning workflow. A Pipeline’s stages are specified as an ordered array.
+
+from pyspark.ml import Pipeline
+pipeline = Pipeline(stages = stages)
+pipelineModel = pipeline.fit(df)
+df = pipelineModel.transform(df)
+selectedCols = ['label', 'features'] + cols
+df = df.select(selectedCols)
+df.printSchema()
+root
+ |-- label: double (nullable = false)
+ |-- features: vector (nullable = true)
+ |-- age: integer (nullable = true)
+ |-- job: string (nullable = true)
+ |-- marital: string (nullable = true)
+ |-- education: string (nullable = true)
+ |-- default: string (nullable = true)
+ |-- balance: integer (nullable = true)
+ |-- housing: string (nullable = true)
+ |-- loan: string (nullable = true)
+ |-- contact: string (nullable = true)
+ |-- duration: integer (nullable = true)
+ |-- campaign: integer (nullable = true)
+ |-- pdays: integer (nullable = true)
+ |-- previous: integer (nullable = true)
+ |-- poutcome: string (nullable = true)
+ |-- deposit: string (nullable = true)
+
+pd.DataFrame(df.take(5), columns=df.columns)
+label	features	age	job	marital	education	default	balance	housing	loan	contact	duration	campaign	pdays	previous	poutcome	deposit
+0	1.0	(0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, ...	59	admin.	married	secondary	no	2343	yes	no	unknown	1042	1	-1	0	unknown	yes
+1	1.0	(0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, ...	56	admin.	married	secondary	no	45	no	no	unknown	1467	1	-1	0	unknown	yes
+2	1.0	(0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, ...	41	technician	married	secondary	no	1270	yes	no	unknown	1389	1	-1	0	unknown	yes
+3	1.0	(0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, ...	55	services	married	secondary	no	2476	yes	no	unknown	579	1	-1	0	unknown	yes
+4	1.0	(0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, ...	54	admin.	married	tertiary	no	184	no	no	unknown	673	2	-1	0	unknown	yes
+# Randomly split data into train and test sets, and set seed for reproducibility.
+train, test = df.randomSplit([0.7, 0.3], seed = 2018)
+print("Training Dataset Count: " + str(train.count()))
+print("Test Dataset Count: " + str(test.count()))
+                                   
+Training Dataset Count: 7764
+Test Dataset Count: 3398
+from pyspark.ml.classification import LogisticRegression
+lr = LogisticRegression(featuresCol = 'features', labelCol = 'label', maxIter=100)
+lrModel = lr.fit(train)
+import matplotlib.pyplot as plt
+import numpy as np
+beta = np.sort(lrModel.coefficients)
+plt.plot(beta)
+plt.ylabel('Beta Coefficients')
+plt.show()
+
+# Summarize the model over the training set, we can also obtain the receiver-operating characteristic and 
+# areaUnderROC
+trainingSummary = lrModel.summary
+roc = trainingSummary.roc.toPandas()
+plt.plot(roc['FPR'],roc['TPR'])
+plt.ylabel('True Positive Rate')
+plt.xlabel('False Positive Rate')
+plt.title('ROC Curve')
+plt.show()
+print('Training set areaUnderROC: ' + str(trainingSummary.areaUnderROC))
+
+Training set areaUnderROC: 0.8863500294956214
+# Precision and recall.
+pr = trainingSummary.pr.toPandas()
+plt.plot(pr['recall'],pr['precision'])
+plt.ylabel('Precision')
+plt.xlabel('Recall')
+plt.show()
+
+# Make predictions on the test set.
+predictions = lrModel.transform(test)
+predictions.select('age', 'job', 'label', 'rawPrediction', 'prediction', 'probability').show(10)
++---+----------+-----+--------------------+----------+--------------------+
+|age|       job|label|       rawPrediction|prediction|         probability|
++---+----------+-----+--------------------+----------+--------------------+
+| 37|management|  0.0|[1.16500916492197...|       0.0|[0.76224171438334...|
+| 40|management|  0.0|[2.11444738042022...|       0.0|[0.89229947775653...|
+| 53|management|  0.0|[0.89139667963532...|       0.0|[0.70917831410064...|
+| 32|management|  0.0|[1.25500691269156...|       0.0|[0.77816537822361...|
+| 54|management|  0.0|[1.17165748343680...|       0.0|[0.76344448296564...|
+| 40|management|  0.0|[1.67410117893459...|       0.0|[0.84212184909110...|
+| 56|management|  0.0|[2.95969069802851...|       0.0|[0.95071950454226...|
+| 50|management|  0.0|[-0.9166716270363...|       1.0|[0.28563655835278...|
+| 47|management|  0.0|[0.69569986401943...|       0.0|[0.66723368811205...|
+| 44|management|  0.0|[1.20889073998621...|       0.0|[0.77010261942216...|
++---+----------+-----+--------------------+----------+--------------------+
+only showing top 10 rows
+
+# Evaluate our Logistic Regression model.
+from pyspark.ml.evaluation import BinaryClassificationEvaluator
+evaluator = BinaryClassificationEvaluator()
+print('Test Area Under ROC', evaluator.evaluate(predictions))
+Test Area Under ROC 0.8880439820275378
+Decision Tree Classifier
+Decision trees are widely used since they are easy to interpret, handle categorical features, extend to the multi-class classification, do not require feature scaling, and are able to capture non-linearities and feature interactions.
+
+from pyspark.ml.classification import DecisionTreeClassifier
+dt = DecisionTreeClassifier(featuresCol = 'features', labelCol = 'label', maxDepth = 3)
+dtModel = dt.fit(train)
+predictions = dtModel.transform(test)
+predictions.select('age', 'job', 'label', 'rawPrediction', 'prediction', 'probability').show(10)
++---+----------+-----+--------------+----------+--------------------+
+|age|       job|label| rawPrediction|prediction|         probability|
++---+----------+-----+--------------+----------+--------------------+
+| 37|management|  0.0|[2463.0,473.0]|       0.0|[0.83889645776566...|
+| 40|management|  0.0|[2463.0,473.0]|       0.0|[0.83889645776566...|
+| 53|management|  0.0|[2463.0,473.0]|       0.0|[0.83889645776566...|
+| 32|management|  0.0|[2463.0,473.0]|       0.0|[0.83889645776566...|
+| 54|management|  0.0|[2463.0,473.0]|       0.0|[0.83889645776566...|
+| 40|management|  0.0|  [373.0,30.0]|       0.0|[0.92555831265508...|
+| 56|management|  0.0|[2463.0,473.0]|       0.0|[0.83889645776566...|
+| 50|management|  0.0|[788.0,1230.0]|       1.0|[0.39048562933597...|
+| 47|management|  0.0|[788.0,1230.0]|       1.0|[0.39048562933597...|
+| 44|management|  0.0|[2463.0,473.0]|       0.0|[0.83889645776566...|
++---+----------+-----+--------------+----------+--------------------+
+only showing top 10 rows
+
+# Evaluate our Decision Tree model.
+evaluator = BinaryClassificationEvaluator()
+print("Test Area Under ROC: " + str(evaluator.evaluate(predictions, {evaluator.metricName: "areaUnderROC"})))
+Test Area Under ROC: 0.7910083562522027
+# Random Forest Classifier
+from pyspark.ml.classification import RandomForestClassifier
+rf = RandomForestClassifier(featuresCol = 'features', labelCol = 'label')
+rfModel = rf.fit(train)
+predictions = rfModel.transform(test)
+predictions.select('age', 'job', 'label', 'rawPrediction', 'prediction', 'probability').show(10)
++---+----------+-----+--------------------+----------+--------------------+
+|age|       job|label|       rawPrediction|prediction|         probability|
++---+----------+-----+--------------------+----------+--------------------+
+| 37|management|  0.0|[14.5948873046559...|       0.0|[0.72974436523279...|
+| 40|management|  0.0|[15.4902867422606...|       0.0|[0.77451433711303...|
+| 53|management|  0.0|[13.5006335860119...|       0.0|[0.67503167930059...|
+| 32|management|  0.0|[14.8408077709596...|       0.0|[0.74204038854798...|
+| 54|management|  0.0|[15.2057103926624...|       0.0|[0.76028551963312...|
+| 40|management|  0.0|[15.3862418186212...|       0.0|[0.76931209093106...|
+| 56|management|  0.0|[17.2483002880344...|       0.0|[0.86241501440172...|
+| 50|management|  0.0|[4.67489044553232...|       1.0|[0.23374452227661...|
+| 47|management|  0.0|[11.7169531591080...|       0.0|[0.58584765795540...|
+| 44|management|  0.0|[12.3874141882562...|       0.0|[0.61937070941281...|
++---+----------+-----+--------------------+----------+--------------------+
+only showing top 10 rows
+
+# Evaluate our Random Forest Classifier.
+evaluator = BinaryClassificationEvaluator()
+print("Test Area Under ROC: " + str(evaluator.evaluate(predictions, {evaluator.metricName: "areaUnderROC"})))
+Test Area Under ROC: 0.8738605899053347
+# Gradient-Boosted Tree Classifier
+from pyspark.ml.classification import GBTClassifier
+gbt = GBTClassifier(maxIter=10)
+gbtModel = gbt.fit(train)
+predictions = gbtModel.transform(test)
+predictions.select('age', 'job', 'label', 'rawPrediction', 'prediction', 'probability').show(10)
++---+----------+-----+--------------------+----------+--------------------+
+|age|       job|label|       rawPrediction|prediction|         probability|
++---+----------+-----+--------------------+----------+--------------------+
+| 37|management|  0.0|[0.57808138910181...|       0.0|[0.76063477260811...|
+| 40|management|  0.0|[1.37467582901950...|       0.0|[0.93987672346171...|
+| 53|management|  0.0|[-0.0012929624008...|       1.0|[0.49935351915983...|
+| 32|management|  0.0|[0.61900313605401...|       0.0|[0.77521678642033...|
+| 54|management|  0.0|[0.98157815641818...|       0.0|[0.87687413211579...|
+| 40|management|  0.0|[0.96138354833170...|       0.0|[0.87244668327834...|
+| 56|management|  0.0|[1.39120025731353...|       0.0|[0.94171733839668...|
+| 50|management|  0.0|[-0.6141629093446...|       1.0|[0.22647458093662...|
+| 47|management|  0.0|[-0.0439971283470...|       1.0|[0.47801561939801...|
+| 44|management|  0.0|[0.26452511568224...|       0.0|[0.62926156628314...|
++---+----------+-----+--------------------+----------+--------------------+
+only showing top 10 rows
+
+#Evaluate our Gradient-Boosted Tree Classifier.
+evaluator = BinaryClassificationEvaluator()
+print("Test Area Under ROC: " + str(evaluator.evaluate(predictions, {evaluator.metricName: "areaUnderROC"})))
+Test Area Under ROC: 0.8940728473145346
+print(gbt.explainParams())
+cacheNodeIds: If false, the algorithm will pass trees to executors to match instances with nodes. If true, the algorithm will cache node IDs for each instance. Caching can speed up training of deeper trees. Users can set how often should the cache be checkpointed or disable it by setting checkpointInterval. (default: False)
+checkpointInterval: set checkpoint interval (>= 1) or disable checkpoint (-1). E.g. 10 means that the cache will get checkpointed every 10 iterations. Note: this setting will be ignored if the checkpoint directory is not set in the SparkContext. (default: 10)
+featureSubsetStrategy: The number of features to consider for splits at each tree node. Supported options: 'auto' (choose automatically for task: If numTrees == 1, set to 'all'. If numTrees > 1 (forest), set to 'sqrt' for classification and to 'onethird' for regression), 'all' (use all features), 'onethird' (use 1/3 of the features), 'sqrt' (use sqrt(number of features)), 'log2' (use log2(number of features)), 'n' (when n is in the range (0, 1.0], use n * number of features. When n is in the range (1, number of features), use n features). default = 'auto' (default: all)
+featuresCol: features column name. (default: features)
+labelCol: label column name. (default: label)
+lossType: Loss function which GBT tries to minimize (case-insensitive). Supported options: logistic (default: logistic)
+maxBins: Max number of bins for discretizing continuous features.  Must be >=2 and >= number of categories for any categorical feature. (default: 32)
+maxDepth: Maximum depth of the tree. (>= 0) E.g., depth 0 means 1 leaf node; depth 1 means 1 internal node + 2 leaf nodes. (default: 5)
+maxIter: max number of iterations (>= 0). (default: 20, current: 10)
+maxMemoryInMB: Maximum memory in MB allocated to histogram aggregation. If too small, then 1 node will be split per iteration, and its aggregates may exceed this size. (default: 256)
+minInfoGain: Minimum information gain for a split to be considered at a tree node. (default: 0.0)
+minInstancesPerNode: Minimum number of instances each child must have after split. If a split causes the left or right child to have fewer than minInstancesPerNode, the split will be discarded as invalid. Should be >= 1. (default: 1)
+predictionCol: prediction column name. (default: prediction)
+seed: random seed. (default: -3971383738611944054)
+stepSize: Step size (a.k.a. learning rate) in interval (0, 1] for shrinking the contribution of each estimator. (default: 0.1)
+subsamplingRate: Fraction of the training data used for learning each decision tree, in range (0, 1]. (default: 1.0)
+from pyspark.ml.tuning import ParamGridBuilder, CrossValidator
+paramGrid = (ParamGridBuilder()
+             .addGrid(gbt.maxDepth, [2, 4, 6, 8, 10])
+             .addGrid(gbt.maxBins, [20,40,60])
+             .addGrid(gbt.maxIter, [10, 20])
+             .build())
+cv = CrossValidator(estimator=gbt, estimatorParamMaps=paramGrid, evaluator=evaluator, numFolds=5)
+# Run cross validations.  This can take about 10 minutes since it is training over 30 trees!
+cvModel = cv.fit(train)
+predictions = cvModel.transform(test)
+evaluator.evaluate(predictions)
+0.8973993211759208
+ 
+ 
